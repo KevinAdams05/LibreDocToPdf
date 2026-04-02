@@ -4,5 +4,5 @@ Tested on Windows 11, but should work on most versions of Windows that support L
 
 <img width="519" height="452" alt="Screenshot" src="https://github.com/user-attachments/assets/9c2ca67a-df2a-42a7-9c46-f84282488801" />
 
-A Linux version based on Vala/GTK is coming soon.
+A Linux version based on Vala/GTK, and Hakiu version based on BeAPI are coming soon. Some code is there but is not done yet.
 
