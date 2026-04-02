@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace LibreDocToPdf
 {
@@ -191,12 +192,12 @@ namespace LibreDocToPdf
             try
             {
                 await Task.WhenAll(tasks);
-                progressBar.Value = 100;
+                progressBar.Value = progressBar.Maximum;
                 Log("All conversions completed.");
             }
             catch (OperationCanceledException)
             {
-                progressBar.Value = 100;
+                progressBar.Value = progressBar.Maximum;
                 Log("Operation cancelled.");
             }
         }
