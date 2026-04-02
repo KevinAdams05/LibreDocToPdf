@@ -1,11 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace LibreDocToPdf
 {
@@ -148,32 +148,37 @@ namespace LibreDocToPdf
                 return;
             }
 
-            // Kill stuck LibreOffice processes before starting
             KillStuckLibreOffice();
 
             cts = new CancellationTokenSource();
             CancellationToken token = cts.Token;
 
             string[] allFiles = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
-            System.Collections.Generic.List<string> files = allFiles
+            List<string> files = allFiles
                 .Where(f => f.EndsWith(".doc", StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            totalFiles = files.Count;
+            List<string> filesToProcess = files
+                .Where(f => !File.Exists(Path.Combine(customOutputFolder ?? Path.GetDirectoryName(f)!, Path.GetFileNameWithoutExtension(f) + ".pdf")))
+                .ToList();
+
+            totalFiles = filesToProcess.Count;
             processedFiles = 0;
 
+            progressBar.Minimum = 0;
             progressBar.Maximum = totalFiles;
             progressBar.Value = 0;
 
-            Log($"Found {totalFiles} files.");
+            Log($"Found {files.Count} files, {totalFiles} to convert.");
 
             SemaphoreSlim semaphore = new SemaphoreSlim(Environment.ProcessorCount);
-            System.Collections.Generic.List<Task> tasks = new System.Collections.Generic.List<Task>();
+            List<Task> tasks = new List<Task>();
 
-            foreach (string file in files)
+            foreach (string file in filesToProcess)
             {
-                Task task = Task.Run(async () => {
+                Task task = Task.Run(async () =>
+                {
                     await semaphore.WaitAsync(token);
                     try
                     {
@@ -192,12 +197,17 @@ namespace LibreDocToPdf
             try
             {
                 await Task.WhenAll(tasks);
-                progressBar.Value = progressBar.Maximum;
+
+                Interlocked.Exchange(ref processedFiles, totalFiles);
+                UpdateProgress();
+
                 Log("All conversions completed.");
             }
             catch (OperationCanceledException)
             {
-                progressBar.Value = progressBar.Maximum;
+                Interlocked.Exchange(ref processedFiles, totalFiles);
+                UpdateProgress();
+
                 Log("Operation cancelled.");
             }
         }
