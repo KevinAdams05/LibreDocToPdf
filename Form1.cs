@@ -36,13 +36,12 @@ namespace LibreDocToPdf
 
         private string DetectLibreOffice()
         {
-            string[] paths =
-            {
+            string[] paths = {
                 @"C:\Program Files\LibreOffice\program\soffice.exe",
                 @"C:\Program Files (x86)\LibreOffice\program\soffice.exe"
             };
 
-            foreach (var p in paths)
+            foreach (string p in paths)
             {
                 if (File.Exists(p))
                 {
@@ -50,14 +49,14 @@ namespace LibreDocToPdf
                 }
             }
 
-            var env = Environment.GetEnvironmentVariable("PATH")?.Split(';');
+            string[]? env = Environment.GetEnvironmentVariable("PATH")?.Split(';');
             if (env != null)
             {
-                foreach (var p in env)
+                foreach (string p in env)
                 {
                     try
                     {
-                        var full = Path.Combine(p, "soffice.exe");
+                        string full = Path.Combine(p, "soffice.exe");
                         if (File.Exists(full))
                         {
                             return full;
@@ -121,6 +120,23 @@ namespace LibreDocToPdf
             }
         }
 
+        private void KillStuckLibreOffice()
+        {
+            Process[] processes = Process.GetProcessesByName("soffice");
+            foreach (Process p in processes)
+            {
+                try
+                {
+                    if ((DateTime.Now - p.StartTime).TotalMinutes > 5)
+                    {
+                        p.Kill();
+                        Log($"Killed stuck LibreOffice process (PID {p.Id})");
+                    }
+                }
+                catch { }
+            }
+        }
+
         private async void btnConvert_Click(object sender, EventArgs e)
         {
             string folder = txtFolder.Text;
@@ -131,10 +147,14 @@ namespace LibreDocToPdf
                 return;
             }
 
-            cts = new CancellationTokenSource();
-            var token = cts.Token;
+            // Kill stuck LibreOffice processes before starting
+            KillStuckLibreOffice();
 
-            var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories)
+            cts = new CancellationTokenSource();
+            CancellationToken token = cts.Token;
+
+            string[] allFiles = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+            System.Collections.Generic.List<string> files = allFiles
                 .Where(f => f.EndsWith(".doc", StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -147,35 +167,53 @@ namespace LibreDocToPdf
 
             Log($"Found {totalFiles} files.");
 
-            using SemaphoreSlim semaphore = new SemaphoreSlim(Environment.ProcessorCount);
+            SemaphoreSlim semaphore = new SemaphoreSlim(Environment.ProcessorCount);
+            System.Collections.Generic.List<Task> tasks = new System.Collections.Generic.List<Task>();
 
-            var tasks = files.Select(async file =>
+            foreach (string file in files)
             {
-                await semaphore.WaitAsync(token);
-                try
-                {
-                    token.ThrowIfCancellationRequested();
-                    await ConvertWithRetry(file, token);
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
+                Task task = Task.Run(async () => {
+                    await semaphore.WaitAsync(token);
+                    try
+                    {
+                        token.ThrowIfCancellationRequested();
+                        await ConvertWithRetry(file, token);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+
+                tasks.Add(task);
+            }
 
             try
             {
                 await Task.WhenAll(tasks);
+                progressBar.Value = 100;
                 Log("All conversions completed.");
             }
             catch (OperationCanceledException)
             {
+                progressBar.Value = 100;
                 Log("Operation cancelled.");
             }
         }
 
         private async Task ConvertWithRetry(string file, CancellationToken token)
         {
+            string outputFile = Path.Combine(customOutputFolder ?? Path.GetDirectoryName(file)!, Path.GetFileNameWithoutExtension(file) + ".pdf");
+
+            if (File.Exists(outputFile))
+            {
+                Log($"Skipping already converted: {Path.GetFileName(file)}");
+                Interlocked.Increment(ref processedFiles);
+                UpdateProgress();
+
+                return;
+            }
+
             for (int i = 1; i <= retryCount + 1; i++)
             {
                 token.ThrowIfCancellationRequested();
@@ -195,7 +233,7 @@ namespace LibreDocToPdf
         {
             string outputDir = customOutputFolder ?? Path.GetDirectoryName(file)!;
 
-            var psi = new ProcessStartInfo
+            ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = sofficePath,
                 Arguments = $"--headless --convert-to pdf --outdir \"{outputDir}\" \"{file}\"",
@@ -205,7 +243,7 @@ namespace LibreDocToPdf
 
             try
             {
-                using var p = Process.Start(psi)!;
+                Process p = Process.Start(psi)!;
                 await p.WaitForExitAsync(token);
 
                 if (p.ExitCode == 0)
