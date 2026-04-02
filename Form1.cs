@@ -43,7 +43,12 @@ namespace LibreDocToPdf
             };
 
             foreach (var p in paths)
-                if (File.Exists(p)) return p;
+            {
+                if (File.Exists(p))
+                {
+                    return p;
+                }
+            }
 
             var env = Environment.GetEnvironmentVariable("PATH")?.Split(';');
             if (env != null)
@@ -53,7 +58,10 @@ namespace LibreDocToPdf
                     try
                     {
                         var full = Path.Combine(p, "soffice.exe");
-                        if (File.Exists(full)) return full;
+                        if (File.Exists(full))
+                        {
+                            return full;
+                        }
                     }
                     catch { }
                 }
@@ -68,9 +76,13 @@ namespace LibreDocToPdf
             string line = $"{DateTime.Now:HH:mm:ss} - {msg}";
 
             if (txtLog.InvokeRequired)
+            {
                 txtLog.Invoke(() => txtLog.AppendText(line + Environment.NewLine));
+            }
             else
+            {
                 txtLog.AppendText(line + Environment.NewLine);
+            }
 
             File.AppendAllText(logFilePath, line + Environment.NewLine);
         }
@@ -78,21 +90,30 @@ namespace LibreDocToPdf
         private void UpdateProgress()
         {
             if (progressBar.InvokeRequired)
+            {
                 progressBar.Invoke(() => progressBar.Value = processedFiles);
+            }
             else
+            {
                 progressBar.Value = processedFiles;
+            }
         }
 
         private void Form1_DragEnter(object? sender, DragEventArgs e)
         {
             if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            {
                 e.Effect = DragDropEffects.Copy;
+            }
         }
 
         private void Form1_DragDrop(object? sender, DragEventArgs e)
         {
             if (e.Data?.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0)
+            {
                 return;
+            }
+
             if (Directory.Exists(paths[0]))
             {
                 txtFolder.Text = paths[0];
@@ -106,7 +127,7 @@ namespace LibreDocToPdf
 
             if (!Directory.Exists(folder))
             {
-                MessageBox.Show("Invalid folder");
+                MessageBox.Show("Invalid folder", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -160,7 +181,9 @@ namespace LibreDocToPdf
                 token.ThrowIfCancellationRequested();
 
                 if (await ConvertToPdf(file, token))
+                {
                     return;
+                }
 
                 Log($"Retry {i}/{retryCount} for {Path.GetFileName(file)}");
             }
@@ -188,7 +211,7 @@ namespace LibreDocToPdf
                 if (p.ExitCode == 0)
                 {
                     Interlocked.Increment(ref processedFiles);
-                    Log($"✔ {Path.GetFileName(file)}");
+                    Log($"Complete: {Path.GetFileName(file)}");
                     UpdateProgress();
                     return true;
                 }
@@ -210,8 +233,7 @@ namespace LibreDocToPdf
 
         private void retryMenuItem_Click(object sender, EventArgs e)
         {
-            string input = Microsoft.VisualBasic.Interaction.InputBox(
-                "Retry count:", "Options", retryCount.ToString());
+            string input = Microsoft.VisualBasic.Interaction.InputBox("Retry count:", "Options", retryCount.ToString());
 
             if (int.TryParse(input, out int val))
             {
