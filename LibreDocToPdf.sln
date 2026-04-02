@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36616.10 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LibreDocToPdf", "LibreDocToPdf.csproj", "{582CFA03-0F66-1E81-1658-B22EB3BA3B34}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{582CFA03-0F66-1E81-1658-B22EB3BA3B34}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{582CFA03-0F66-1E81-1658-B22EB3BA3B34}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{582CFA03-0F66-1E81-1658-B22EB3BA3B34}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{582CFA03-0F66-1E81-1658-B22EB3BA3B34}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {57FC40A6-C866-43E4-98D7-C1A5C40DECF1}
+	EndGlobalSection
+EndGlobal
