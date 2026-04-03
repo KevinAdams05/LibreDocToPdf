@@ -1,60 +1,80 @@
+using GLib;
+using Gee;
+
 /**
- * Simple async semaphore for limiting concurrency in GLib async methods.
+ * GTK4-friendly async semaphore using Futures-style waiting.
  */
-public class AsyncSemaphore {
+public class AsyncSemaphore : Object {
     private int max_count;
-    private int current_count;
-    private Queue<SourceFunc> waiters;
+    private int current_count = 0;
+    private Gee.Queue<TaskCompletionSource> waiters;
 
     public AsyncSemaphore (int max_count) {
         this.max_count = max_count;
-        this.current_count = 0;
-        this.waiters = new Queue<SourceFunc> ();
+        this.waiters = new ArrayQueue<TaskCompletionSource> ();
     }
 
     public async void acquire () {
+        // Fast path
         if (current_count < max_count) {
             current_count++;
             return;
         }
 
-        SourceFunc callback = acquire.callback;
-        waiters.push_tail ((owned) callback);
-        yield;
+        // Create a waiter and suspend
+        var tcs = new TaskCompletionSource ();
+        waiters.offer (tcs);
+
+        yield tcs.wait_async ();
     }
 
     public void release () {
-        current_count--;
+        if (!waiters.is_empty) {
+            // Wake next waiter instead of freeing slot
+            var tcs = waiters.poll ();
 
-        if (!waiters.is_empty ()) {
-            current_count++;
-            var callback = waiters.pop_head ();
-            Idle.add ((owned) callback);
+            Idle.add (() => {
+                tcs.complete ();
+                return false;
+            });
+        } else {
+            // No waiters → free slot
+            if (current_count > 0)
+                current_count--;
         }
     }
 }
 
 /**
- * Simple async task completion source for waiting on async operations.
+ * GTK4-style async completion primitive.
+ * (Cleaner replacement for manual SourceFunc handling)
  */
-public class AsyncTask {
+public class TaskCompletionSource : Object {
     private bool completed = false;
-    private SourceFunc? waiter = null;
+    private SourceFunc? continuation = null;
 
     public async void wait_async () {
-        if (completed) return;
+        if (completed)
+            return;
 
-        waiter = wait_async.callback;
+        continuation = wait_async.callback;
         yield;
     }
 
     public void complete () {
+        if (completed)
+            return;
+
         completed = true;
 
-        if (waiter != null) {
-            var cb = (owned) waiter;
-            waiter = null;
-            Idle.add ((owned) cb);
+        if (continuation != null) {
+            var cb = continuation;
+            continuation = null;
+
+            Idle.add (() => {
+                cb ();
+                return false;
+            });
         }
     }
 }

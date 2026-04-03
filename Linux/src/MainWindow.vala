@@ -18,7 +18,7 @@ public class MainWindow : Gtk.ApplicationWindow {
     public MainWindow (Gtk.Application app) {
         Object (
             application: app,
-            title: "LibreOffice DOC → PDF Converter",
+            title: "DOC to PDF Converter",
             default_width: 700,
             default_height: 500
         );
@@ -242,13 +242,13 @@ public class MainWindow : Gtk.ApplicationWindow {
         int max_concurrent = (int) GLib.get_num_processors ();
         var semaphore = new AsyncSemaphore (max_concurrent);
 
-        var pending = new GenericArray<AsyncTask> ();
+        var pending = new GenericArray<TaskCompletionSource> ();
 
         for (int i = 0; i < files.length; i++) {
             if (cancellable.is_cancelled ()) break;
 
             var file = files[i];
-            var task = new AsyncTask ();
+            var task = new TaskCompletionSource ();
             pending.add (task);
 
             convert_single_file.begin (file, semaphore, task);
@@ -269,7 +269,7 @@ public class MainWindow : Gtk.ApplicationWindow {
         }
     }
 
-    private async void convert_single_file (string file, AsyncSemaphore semaphore, AsyncTask task) {
+    private async void convert_single_file (string file, AsyncSemaphore semaphore, TaskCompletionSource task) {
         yield semaphore.acquire ();
 
         try {
@@ -332,7 +332,7 @@ public class MainWindow : Gtk.ApplicationWindow {
 
             if (launcher.get_successful ()) {
                 processed_files++;
-                log_message ("✔ %s".printf (Path.get_basename (file)));
+                log_message ("Complete: %s".printf (Path.get_basename (file)));
                 update_progress ();
                 return true;
             }
@@ -370,7 +370,6 @@ public class MainWindow : Gtk.ApplicationWindow {
             try {
                 var button = dialog.choose.end (res);
                 if (button == 1) {
-                    // AlertDialog doesn't support text entry, use a custom approach
                     show_retry_entry_dialog ();
                 }
             } catch (Error e) {

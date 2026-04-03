@@ -10,12 +10,13 @@ dependencies = [
   dependency('gobject-2.0'),
   dependency('gio-2.0'),
   dependency('gtk4'),
+  dependency('gee-0.8'),
 ]
 
 sources = files(
   'src/Application.vala',
   'src/MainWindow.vala',
-  'src/AsyncHelpers.vala',
+  'src/AsyncHelpers.vala',  
 )
 
 executable('doc-to-pdf', sources,
