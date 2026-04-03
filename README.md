@@ -27,5 +27,5 @@ Tested on Linux Mint 22.3 Cinnamon.
 
 This is meant to be a quick and simple app, there may be bugs. Feel free to log an issue or submit a PR.
 
-Some AI was used to help, especially with the Linux and Haiku ports.
+Some AI was used to help, especially with the Linux port.
 
