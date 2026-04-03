@@ -23,11 +23,6 @@ Tested on Linux Mint 22.3 Cinnamon.
 <img width="519" height="452" alt="vala screenshot" src="https://github.com/user-attachments/assets/582a5a32-0a12-4b3f-9055-a8020ce5bcb4" />
 
 
-**Haiku Version**
-
-A Haiku version based on BeAPI are coming soon. Some code is there but is not done yet.
-
-
 **Notes**
 
 This is meant to be a quick and simple app, there may be bugs. Feel free to log an issue or submit a PR.
