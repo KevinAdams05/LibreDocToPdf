@@ -13,7 +13,7 @@ The Linux version is written in Vala and GTK.
 **Windows version**
 
 Tested on Windows 11, but should work on most versions of Windows that support LibreOffice.
-<img width="519" height="452" alt="Screenshot" src="https://github.com/user-attachments/assets/9c2ca67a-df2a-42a7-9c46-f84282488801" />
+<img width="519" height="382" alt="Screenshot" src="Screenshot - Windows.png" />
 
 
 **Linux version**

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,6 +20,11 @@ namespace LibreDocToPdf
         private string? customOutputFolder = null;
         private string logFilePath;
         private CancellationTokenSource? cts;
+        private bool isDarkMode;
+        private static readonly string settingsPath = Path.Combine(AppContext.BaseDirectory, "settings.txt");
+
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
         public Form1()
         {
@@ -26,6 +33,10 @@ namespace LibreDocToPdf
             AllowDrop = true;
             DragEnter += Form1_DragEnter;
             DragDrop += Form1_DragDrop;
+
+            isDarkMode = LoadThemePreference();
+            darkModeMenuItem.Checked = isDarkMode;
+            ApplyTheme();
 
             sofficePath = DetectLibreOffice();
 
@@ -107,6 +118,17 @@ namespace LibreDocToPdf
             }
         }
 
+        private void btnBrowse_Click(object sender, EventArgs e)
+        {
+            using FolderBrowserDialog dlg = new FolderBrowserDialog();
+
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                txtFolder.Text = dlg.SelectedPath;
+                Log($"Folder selected: {dlg.SelectedPath}");
+            }
+        }
+
         private void Form1_DragDrop(object? sender, DragEventArgs e)
         {
             if (e.Data?.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0)
@@ -153,7 +175,8 @@ namespace LibreDocToPdf
             cts = new CancellationTokenSource();
             CancellationToken token = cts.Token;
 
-            string[] allFiles = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+            SearchOption searchOption = chkRecursive.Checked ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            string[] allFiles = Directory.GetFiles(folder, "*.*", searchOption);
             List<string> files = allFiles
                 .Where(f => f.EndsWith(".doc", StringComparison.OrdinalIgnoreCase) ||
                             f.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
@@ -312,6 +335,87 @@ namespace LibreDocToPdf
                 File.Copy(logFilePath, sfd.FileName, true);
                 MessageBox.Show("Log exported.");
             }
+        }
+        private void aboutMenuItem_Click(object sender, EventArgs e)
+        {
+            using AboutForm about = new AboutForm(isDarkMode);
+            about.ShowDialog(this);
+        }
+
+        private void darkModeMenuItem_Click(object sender, EventArgs e)
+        {
+            isDarkMode = darkModeMenuItem.Checked;
+            ApplyTheme();
+            SaveThemePreference();
+        }
+
+        private void ApplyTheme()
+        {
+            AppTheme theme = isDarkMode ? AppTheme.Dark : AppTheme.Light;
+
+            int useDarkMode = isDarkMode ? 1 : 0;
+            DwmSetWindowAttribute(Handle, 20, ref useDarkMode, sizeof(int));
+
+            BackColor = theme.FormBack;
+            ForeColor = theme.FormFore;
+
+            menuStrip1.BackColor = theme.MenuBack;
+            menuStrip1.ForeColor = theme.MenuFore;
+            menuStrip1.Renderer = theme.GetMenuRenderer();
+
+            foreach (ToolStripMenuItem item in menuStrip1.Items)
+            {
+                item.ForeColor = theme.MenuFore;
+                foreach (ToolStripItem sub in item.DropDownItems)
+                    sub.ForeColor = theme.MenuFore;
+            }
+
+            txtFolder.BackColor = theme.ControlBack;
+            txtFolder.ForeColor = theme.ControlFore;
+
+            txtLog.BackColor = theme.ControlBack;
+            txtLog.ForeColor = theme.ControlFore;
+
+            label1.ForeColor = theme.FormFore;
+            outputLogLabel.ForeColor = theme.FormFore;
+
+            btnBrowse.BackColor = theme.ButtonBack;
+            btnBrowse.ForeColor = theme.ButtonFore;
+            btnBrowse.FlatAppearance.BorderColor = theme.ButtonBorder;
+
+            btnConvert.BackColor = theme.AccentBack;
+            btnConvert.ForeColor = theme.AccentFore;
+
+            btnCancel.BackColor = theme.ButtonBack;
+            btnCancel.ForeColor = theme.ButtonFore;
+            btnCancel.FlatAppearance.BorderColor = theme.ButtonBorder;
+
+            chkRecursive.ForeColor = theme.FormFore;
+
+            progressBar.BarColor = theme.AccentBack;
+            progressBar.BarBackColor = theme.ControlBack;
+            progressBar.BorderColor = theme.ButtonBorder;
+            progressBar.Invalidate();
+        }
+
+        private bool LoadThemePreference()
+        {
+            try
+            {
+                if (File.Exists(settingsPath))
+                    return File.ReadAllText(settingsPath).Trim() == "dark";
+            }
+            catch { }
+            return false;
+        }
+
+        private void SaveThemePreference()
+        {
+            try
+            {
+                File.WriteAllText(settingsPath, isDarkMode ? "dark" : "light");
+            }
+            catch { }
         }
     }
 }
