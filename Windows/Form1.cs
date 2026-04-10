@@ -266,29 +266,49 @@ namespace LibreDocToPdf
         private async Task<bool> ConvertToPdf(string file, CancellationToken token)
         {
             string outputDir = customOutputFolder ?? Path.GetDirectoryName(file)!;
+            string expectedOutput = Path.Combine(outputDir, Path.GetFileNameWithoutExtension(file) + ".pdf");
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = sofficePath,
                 Arguments = $"--headless --convert-to pdf --outdir \"{outputDir}\" \"{file}\"",
                 CreateNoWindow = true,
-                UseShellExecute = false
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             };
 
             try
             {
                 Process p = Process.Start(psi)!;
+                Task<string> stdoutTask = p.StandardOutput.ReadToEndAsync();
+                Task<string> stderrTask = p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync(token);
+                string stdout = await stdoutTask;
+                string stderr = await stderrTask;
 
-                if (p.ExitCode == 0)
+                if (File.Exists(expectedOutput))
                 {
                     Interlocked.Increment(ref processedFiles);
                     Log($"Complete: {Path.GetFileName(file)}");
                     UpdateProgress();
                     return true;
                 }
+
+                if (!string.IsNullOrWhiteSpace(stderr))
+                {
+                    Log($"LibreOffice error: {stderr.Trim()}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(stdout) && stdout.Contains("Error", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log($"LibreOffice: {stdout.Trim()}");
+                }
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                
+            }
             catch (Exception ex)
             {
                 Log(ex.Message);
@@ -367,7 +387,9 @@ namespace LibreDocToPdf
             {
                 item.ForeColor = theme.MenuFore;
                 foreach (ToolStripItem sub in item.DropDownItems)
+                {
                     sub.ForeColor = theme.MenuFore;
+                }
             }
 
             txtFolder.BackColor = theme.ControlBack;

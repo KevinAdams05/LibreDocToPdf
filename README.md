@@ -29,3 +29,6 @@ This is meant to be a quick and simple app, there may be bugs. Feel free to log 
 
 Some AI was used to help, especially with the Linux port.
 
+**License**
+
+This project is licensed under the [MIT License](LICENSE).

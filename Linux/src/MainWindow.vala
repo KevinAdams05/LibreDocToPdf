@@ -4,6 +4,7 @@ public class MainWindow : Gtk.ApplicationWindow {
     private Gtk.Button cancel_button;
     private Gtk.Button browse_button;
     private Gtk.ProgressBar progress_bar;
+    private Gtk.CheckButton recursive_check;
     private Gtk.TextView log_view;
     private Gtk.TextBuffer log_buffer;
 
@@ -37,16 +38,24 @@ public class MainWindow : Gtk.ApplicationWindow {
         setup_actions ();
 
         log_message ("LibreOffice Path: %s".printf (soffice_path));
+        check_dependencies ();
     }
 
     private void build_ui () {
         var header = new Gtk.HeaderBar ();
 
         // Menu button
+        var options_section = new Menu ();
+        options_section.append ("Set Retry Count…", "win.set-retry");
+        options_section.append ("Set Output Folder…", "win.set-output-folder");
+        options_section.append ("Export Log…", "win.export-log");
+
+        var about_section = new Menu ();
+        about_section.append ("About", "win.about");
+
         var menu_model = new Menu ();
-        menu_model.append ("Set Retry Count…", "win.set-retry");
-        menu_model.append ("Set Output Folder…", "win.set-output-folder");
-        menu_model.append ("Export Log…", "win.export-log");
+        menu_model.append_section (null, options_section);
+        menu_model.append_section (null, about_section);
 
         var menu_button = new Gtk.MenuButton ();
         menu_button.icon_name = "open-menu-symbolic";
@@ -92,6 +101,11 @@ public class MainWindow : Gtk.ApplicationWindow {
         progress_bar = new Gtk.ProgressBar ();
         progress_bar.show_text = true;
         vbox.append (progress_bar);
+
+        // Recursive checkbox
+        recursive_check = new Gtk.CheckButton.with_label ("Include subfolders");
+        recursive_check.active = true;
+        vbox.append (recursive_check);
 
         // Log view
         var scrolled = new Gtk.ScrolledWindow ();
@@ -145,6 +159,10 @@ public class MainWindow : Gtk.ApplicationWindow {
         var export_action = new SimpleAction ("export-log", null);
         export_action.activate.connect (() => { show_export_log_dialog (); });
         add_action (export_action);
+
+        var about_action = new SimpleAction ("about", null);
+        about_action.activate.connect (() => { show_about_dialog (); });
+        add_action (about_action);
     }
 
     private string detect_libreoffice () {
@@ -291,7 +309,9 @@ public class MainWindow : Gtk.ApplicationWindow {
                 var path = Path.build_filename (folder, name);
 
                 if (FileUtils.test (path, FileTest.IS_DIR)) {
-                    enumerate_docs (path, results);
+                    if (recursive_check.active) {
+                        enumerate_docs (path, results);
+                    }
                 } else {
                     var lower = name.down ();
                     if (lower.has_suffix (".doc") || lower.has_suffix (".docx")) {
@@ -321,20 +341,35 @@ public class MainWindow : Gtk.ApplicationWindow {
     private async bool convert_to_pdf (string file) {
         var output_dir = custom_output_folder ?? Path.get_dirname (file);
 
+        var basename = Path.get_basename (file);
+        var dot_index = basename.last_index_of (".");
+        var name_without_ext = (dot_index > 0) ? basename.substring (0, dot_index) : basename;
+        var expected_output = Path.build_filename (output_dir, name_without_ext + ".pdf");
+
         try {
             var launcher = new Subprocess.newv (
                 { soffice_path, "--headless", "--convert-to", "pdf",
                   "--outdir", output_dir, file },
-                SubprocessFlags.STDOUT_SILENCE | SubprocessFlags.STDERR_SILENCE
+                SubprocessFlags.STDOUT_PIPE | SubprocessFlags.STDERR_PIPE
             );
 
-            yield launcher.wait_async (cancellable);
+            string? stdout_buf;
+            string? stderr_buf;
+            yield launcher.communicate_utf8_async (null, cancellable, out stdout_buf, out stderr_buf);
 
-            if (launcher.get_successful ()) {
+            if (FileUtils.test (expected_output, FileTest.EXISTS)) {
                 processed_files++;
-                log_message ("Complete: %s".printf (Path.get_basename (file)));
+                log_message ("Complete: %s".printf (basename));
                 update_progress ();
                 return true;
+            }
+
+            // Conversion failed — log any output from LibreOffice
+            if (stderr_buf != null && stderr_buf.strip () != "") {
+                log_message ("LibreOffice error: %s".printf (stderr_buf.strip ()));
+            }
+            if (stdout_buf != null && stdout_buf.strip () != "") {
+                log_message ("LibreOffice: %s".printf (stdout_buf.strip ()));
             }
         } catch (Error e) {
             if (!(e is IOError.CANCELLED)) {
@@ -458,6 +493,51 @@ public class MainWindow : Gtk.ApplicationWindow {
                 // cancelled
             }
         });
+    }
+
+    private void check_dependencies () {
+        string[] checks = {
+            "which java",
+            "dpkg-query -W libreoffice-writer",
+            "dpkg-query -W libreoffice-java-common"
+        };
+
+        string[] messages = {
+            "Warning: Java not found. Install with: sudo apt install default-jre",
+            "Warning: libreoffice-writer not found. Install with: sudo apt install libreoffice-writer",
+            "Warning: libreoffice-java-common not found. Install with: sudo apt install libreoffice-java-common"
+        };
+
+        for (int i = 0; i < checks.length; i++) {
+            try {
+                int status;
+                Process.spawn_command_line_sync (checks[i], null, null, out status);
+                if (status != 0) {
+                    log_message (messages[i]);
+                }
+            } catch (Error e) {
+                // Command not available (e.g. non-Debian system), skip
+            }
+        }
+    }
+
+    private void show_about_dialog () {
+        var about = new Gtk.AboutDialog ();
+        about.transient_for = this;
+        about.modal = true;
+        about.program_name = "DOC to PDF Converter";
+        about.version = "1.0.0";
+        about.authors = { "Kevin Adams" };
+        about.website = "https://github.com/KevinAdams05/LibreDocToPdf";
+        about.website_label = "GitHub Repository";
+        about.license_type = Gtk.License.MIT_X11;
+        about.copyright = "© 2025 Kevin Adams";
+        about.comments = "A simple DOC/DOCX to PDF converter powered by LibreOffice.";
+        about.add_credit_section ("Credits", {
+            "Icon: icon-icons.com (pdf-reader-pro-macos-bigsur)",
+            "Powered by LibreOffice (libreoffice.org)"
+        });
+        about.present ();
     }
 
     private void show_error (string message) {
