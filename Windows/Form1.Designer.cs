@@ -20,6 +20,11 @@ namespace LibreDocToPdf
         private ToolStripMenuItem helpMenu;
         private ToolStripMenuItem aboutMenuItem;
         private ToolStripMenuItem darkModeMenuItem;
+        private ToolStripMenuItem debugModeMenuItem;
+        private ToolStripMenuItem paperSizeMenuItem;
+        private ToolStripMenuItem paperLetterMenuItem;
+        private ToolStripMenuItem paperA4MenuItem;
+        private ToolStripMenuItem paperLegalMenuItem;
         private CheckBox chkRecursive;
 
         private void InitializeComponent()
@@ -39,6 +44,11 @@ namespace LibreDocToPdf
             helpMenu = new ToolStripMenuItem();
             aboutMenuItem = new ToolStripMenuItem();
             darkModeMenuItem = new ToolStripMenuItem();
+            debugModeMenuItem = new ToolStripMenuItem();
+            paperSizeMenuItem = new ToolStripMenuItem();
+            paperLetterMenuItem = new ToolStripMenuItem();
+            paperA4MenuItem = new ToolStripMenuItem();
+            paperLegalMenuItem = new ToolStripMenuItem();
             chkRecursive = new CheckBox();
             outputLogLabel = new Label();
             label1 = new Label();
@@ -150,7 +160,7 @@ namespace LibreDocToPdf
             //
             // optionsMenu
             //
-            optionsMenu.DropDownItems.AddRange(new ToolStripItem[] { retryMenuItem, outputFolderMenuItem, exportLogMenuItem, new ToolStripSeparator(), darkModeMenuItem });
+            optionsMenu.DropDownItems.AddRange(new ToolStripItem[] { retryMenuItem, outputFolderMenuItem, exportLogMenuItem, paperSizeMenuItem, new ToolStripSeparator(), darkModeMenuItem, debugModeMenuItem });
             optionsMenu.Name = "optionsMenu";
             optionsMenu.Size = new System.Drawing.Size(61, 20);
             optionsMenu.Text = "Options";
@@ -183,6 +193,42 @@ namespace LibreDocToPdf
             darkModeMenuItem.Text = "Dark Mode";
             darkModeMenuItem.CheckOnClick = true;
             darkModeMenuItem.Click += darkModeMenuItem_Click;
+            //
+            // debugModeMenuItem
+            //
+            debugModeMenuItem.Name = "debugModeMenuItem";
+            debugModeMenuItem.Size = new System.Drawing.Size(180, 22);
+            debugModeMenuItem.Text = "Debug Logging";
+            debugModeMenuItem.CheckOnClick = true;
+            debugModeMenuItem.Click += debugModeMenuItem_Click;
+            //
+            // paperSizeMenuItem
+            //
+            paperSizeMenuItem.Name = "paperSizeMenuItem";
+            paperSizeMenuItem.Size = new System.Drawing.Size(180, 22);
+            paperSizeMenuItem.Text = "Default Paper Size";
+            paperSizeMenuItem.DropDownItems.AddRange(new ToolStripItem[] { paperLetterMenuItem, paperA4MenuItem, paperLegalMenuItem });
+            //
+            // paperLetterMenuItem
+            //
+            paperLetterMenuItem.Name = "paperLetterMenuItem";
+            paperLetterMenuItem.Size = new System.Drawing.Size(180, 22);
+            paperLetterMenuItem.Text = "Letter (8.5 x 11)";
+            paperLetterMenuItem.Click += paperSizeItem_Click;
+            //
+            // paperA4MenuItem
+            //
+            paperA4MenuItem.Name = "paperA4MenuItem";
+            paperA4MenuItem.Size = new System.Drawing.Size(180, 22);
+            paperA4MenuItem.Text = "A4";
+            paperA4MenuItem.Click += paperSizeItem_Click;
+            //
+            // paperLegalMenuItem
+            //
+            paperLegalMenuItem.Name = "paperLegalMenuItem";
+            paperLegalMenuItem.Size = new System.Drawing.Size(180, 22);
+            paperLegalMenuItem.Text = "Legal (8.5 x 14)";
+            paperLegalMenuItem.Click += paperSizeItem_Click;
             //
             // helpMenu
             //

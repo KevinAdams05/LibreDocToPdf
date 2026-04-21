@@ -15,6 +15,11 @@ public class MainWindow : Gtk.ApplicationWindow {
     private int processed_files = 0;
     private Cancellable? cancellable = null;
     private string log_file_path;
+    private string paper_size = "Letter";
+    private string profile_root;
+    private string template_profile_dir;
+    private bool template_ready = false;
+    private string settings_path;
 
     public MainWindow (Gtk.Application app) {
         Object (
@@ -33,6 +38,15 @@ public class MainWindow : Gtk.ApplicationWindow {
         var now = new DateTime.now_local ();
         log_file_path = Path.build_filename (log_dir, "log_%s.txt".printf (now.format ("%Y%m%d_%H%M%S")));
 
+        profile_root = Path.build_filename (Environment.get_tmp_dir (), "LibreDocToPdf");
+        template_profile_dir = Path.build_filename (profile_root, "_template");
+        DirUtils.create_with_parents (profile_root, 0755);
+
+        var config_dir = Path.build_filename (Environment.get_user_config_dir (), "LibreDocToPdf");
+        DirUtils.create_with_parents (config_dir, 0755);
+        settings_path = Path.build_filename (config_dir, "settings.txt");
+        load_settings ();
+
         build_ui ();
         setup_drop_target ();
         setup_actions ();
@@ -49,6 +63,12 @@ public class MainWindow : Gtk.ApplicationWindow {
         options_section.append ("Set Retry Count…", "win.set-retry");
         options_section.append ("Set Output Folder…", "win.set-output-folder");
         options_section.append ("Export Log…", "win.export-log");
+
+        var paper_submenu = new Menu ();
+        paper_submenu.append ("Letter (8.5 x 11)", "win.paper-size::Letter");
+        paper_submenu.append ("A4", "win.paper-size::A4");
+        paper_submenu.append ("Legal (8.5 x 14)", "win.paper-size::Legal");
+        options_section.append_submenu ("Default Paper Size", paper_submenu);
 
         var about_section = new Menu ();
         about_section.append ("About", "win.about");
@@ -163,6 +183,20 @@ public class MainWindow : Gtk.ApplicationWindow {
         var about_action = new SimpleAction ("about", null);
         about_action.activate.connect (() => { show_about_dialog (); });
         add_action (about_action);
+
+        var paper_action = new SimpleAction.stateful ("paper-size", new VariantType ("s"), new Variant.string (paper_size));
+        paper_action.activate.connect ((parameter) => {
+            if (parameter != null) {
+                var val = parameter.get_string ();
+                if (val == "Letter" || val == "A4" || val == "Legal") {
+                    paper_size = val;
+                    paper_action.set_state (new Variant.string (paper_size));
+                    log_message ("Default paper size set to %s".printf (paper_size));
+                    save_settings ();
+                }
+            }
+        });
+        add_action (paper_action);
     }
 
     private string detect_libreoffice () {
@@ -245,6 +279,8 @@ public class MainWindow : Gtk.ApplicationWindow {
         convert_button.sensitive = false;
         cancel_button.sensitive = true;
 
+        yield ensure_template_profile ();
+
         var files = new GenericArray<string> ();
         enumerate_docs (folder, files);
 
@@ -256,8 +292,9 @@ public class MainWindow : Gtk.ApplicationWindow {
 
         log_message ("Found %d files.".printf (total_files));
 
-        // Process files with concurrency limit
+        // Process files with concurrency limit (capped at 8 — soffice doesn't benefit past this)
         int max_concurrent = (int) GLib.get_num_processors ();
+        if (max_concurrent > 8) max_concurrent = 8;
         var semaphore = new AsyncSemaphore (max_concurrent);
 
         var pending = new GenericArray<TaskCompletionSource> ();
@@ -346,9 +383,22 @@ public class MainWindow : Gtk.ApplicationWindow {
         var name_without_ext = (dot_index > 0) ? basename.substring (0, dot_index) : basename;
         var expected_output = Path.build_filename (output_dir, name_without_ext + ".pdf");
 
+        var profile_dir = Path.build_filename (profile_root, GLib.Uuid.string_random ());
+        try {
+            copy_directory (template_profile_dir, profile_dir);
+            write_paper_size_xcu (profile_dir);
+        } catch (Error e) {
+            log_message ("Profile setup failed: %s".printf (e.message));
+            return false;
+        }
+        var user_installation = "-env:UserInstallation=file://" + profile_dir;
+
         try {
             var launcher = new Subprocess.newv (
-                { soffice_path, "--headless", "--convert-to", "pdf",
+                { soffice_path, user_installation,
+                  "--headless", "--norestore", "--nologo", "--nofirststartwizard",
+                  "--nodefault", "--nolockcheck",
+                  "--convert-to", "pdf",
                   "--outdir", output_dir, file },
                 SubprocessFlags.STDOUT_PIPE | SubprocessFlags.STDERR_PIPE
             );
@@ -375,9 +425,143 @@ public class MainWindow : Gtk.ApplicationWindow {
             if (!(e is IOError.CANCELLED)) {
                 log_message (e.message);
             }
+        } finally {
+            remove_directory_recursive (profile_dir);
         }
 
         return false;
+    }
+
+    private async void ensure_template_profile () {
+        if (template_ready) return;
+        var user_dir = Path.build_filename (template_profile_dir, "user");
+        if (FileUtils.test (user_dir, FileTest.IS_DIR)) {
+            template_ready = true;
+            return;
+        }
+
+        log_message ("Initializing LibreOffice profile template (one-time)...");
+        DirUtils.create_with_parents (template_profile_dir, 0755);
+        var user_installation = "-env:UserInstallation=file://" + template_profile_dir;
+
+        try {
+            var launcher = new Subprocess.newv (
+                { soffice_path, user_installation,
+                  "--headless", "--norestore", "--nologo", "--nofirststartwizard",
+                  "--nodefault", "--nolockcheck", "--terminate_after_init" },
+                SubprocessFlags.STDOUT_PIPE | SubprocessFlags.STDERR_PIPE
+            );
+
+            var timeout_cancel = new Cancellable ();
+            uint timeout_id = Timeout.add_seconds (60, () => {
+                timeout_cancel.cancel ();
+                return false;
+            });
+
+            string? stdout_buf;
+            string? stderr_buf;
+            try {
+                yield launcher.communicate_utf8_async (null, timeout_cancel, out stdout_buf, out stderr_buf);
+            } catch (Error e) {
+                launcher.force_exit ();
+                log_message ("Template init interrupted: %s".printf (e.message));
+            }
+            Source.remove (timeout_id);
+            template_ready = true;
+        } catch (Error e) {
+            log_message ("Template init failed: %s".printf (e.message));
+        }
+    }
+
+    private void copy_directory (string source, string dest) throws Error {
+        DirUtils.create_with_parents (dest, 0755);
+        var dir = Dir.open (source);
+        string? name;
+        while ((name = dir.read_name ()) != null) {
+            var src_path = Path.build_filename (source, name);
+            var dst_path = Path.build_filename (dest, name);
+            if (FileUtils.test (src_path, FileTest.IS_DIR)) {
+                copy_directory (src_path, dst_path);
+            } else {
+                var src_file = File.new_for_path (src_path);
+                var dst_file = File.new_for_path (dst_path);
+                src_file.copy (dst_file, FileCopyFlags.OVERWRITE, null, null);
+            }
+        }
+    }
+
+    private void remove_directory_recursive (string path) {
+        if (!FileUtils.test (path, FileTest.IS_DIR)) return;
+        try {
+            var dir = Dir.open (path);
+            string? name;
+            while ((name = dir.read_name ()) != null) {
+                var child = Path.build_filename (path, name);
+                if (FileUtils.test (child, FileTest.IS_DIR)) {
+                    remove_directory_recursive (child);
+                } else {
+                    FileUtils.unlink (child);
+                }
+            }
+        } catch (Error e) {
+            // ignore
+        }
+        DirUtils.remove (path);
+    }
+
+    private void write_paper_size_xcu (string profile_dir) {
+        int width, height;
+        switch (paper_size) {
+            case "A4":    width = 21000; height = 29700; break;
+            case "Legal": width = 21590; height = 35560; break;
+            default:      width = 21590; height = 27940; break;
+        }
+
+        var user_dir = Path.build_filename (profile_dir, "user");
+        DirUtils.create_with_parents (user_dir, 0755);
+        var xcu_path = Path.build_filename (user_dir, "registrymodifications.xcu");
+
+        var xml = """<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <item oor:path="/org.openoffice.Office.Writer/DefaultPageSize"><prop oor:name="Width" oor:op="fuse"><value>%d</value></prop></item>
+ <item oor:path="/org.openoffice.Office.Writer/DefaultPageSize"><prop oor:name="Height" oor:op="fuse"><value>%d</value></prop></item>
+ <item oor:path="/org.openoffice.Office.Common/Save/Document"><prop oor:name="PrinterIndependentLayout" oor:op="fuse"><value>2</value></prop></item>
+</oor:items>
+""".printf (width, height);
+
+        try {
+            FileUtils.set_contents (xcu_path, xml);
+        } catch (Error e) {
+            log_message ("Failed to write XCU: %s".printf (e.message));
+        }
+    }
+
+    private void load_settings () {
+        if (!FileUtils.test (settings_path, FileTest.EXISTS)) return;
+        try {
+            string contents;
+            FileUtils.get_contents (settings_path, out contents);
+            foreach (var line in contents.split ("\n")) {
+                var eq = line.index_of ("=");
+                if (eq <= 0) continue;
+                var key = line.substring (0, eq).strip ();
+                var val = line.substring (eq + 1).strip ();
+                if (key == "paper" && (val == "Letter" || val == "A4" || val == "Legal")) {
+                    paper_size = val;
+                }
+            }
+        } catch (Error e) {
+            // ignore
+        }
+    }
+
+    private void save_settings () {
+        var content = "paper=%s\n".printf (paper_size);
+        try {
+            FileUtils.set_contents (settings_path, content);
+        } catch (Error e) {
+            // ignore
+        }
     }
 
     private void update_progress () {
@@ -526,7 +710,7 @@ public class MainWindow : Gtk.ApplicationWindow {
         about.transient_for = this;
         about.modal = true;
         about.program_name = "DOC to PDF Converter";
-        about.version = "1.0.0";
+        about.version = "1.0.1";
         about.authors = { "Kevin Adams" };
         about.website = "https://github.com/KevinAdams05/LibreDocToPdf";
         about.website_label = "GitHub Repository";

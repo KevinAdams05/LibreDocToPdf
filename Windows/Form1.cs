@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -21,7 +22,14 @@ namespace LibreDocToPdf
         private string logFilePath;
         private CancellationTokenSource? cts;
         private bool isDarkMode;
+        private bool isDebugMode;
+        private string paperSize = "Letter";
+        private readonly ConcurrentDictionary<int, byte> launchedPids = new ConcurrentDictionary<int, byte>();
         private static readonly string settingsPath = Path.Combine(AppContext.BaseDirectory, "settings.txt");
+        private static readonly string profileRoot = Path.Combine(Path.GetTempPath(), "LibreDocToPdf");
+        private static readonly string templateProfileDir = Path.Combine(profileRoot, "_template");
+        private bool templateReady = false;
+        private readonly SemaphoreSlim templateLock = new SemaphoreSlim(1, 1);
 
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
@@ -34,9 +42,13 @@ namespace LibreDocToPdf
             DragEnter += Form1_DragEnter;
             DragDrop += Form1_DragDrop;
 
-            isDarkMode = LoadThemePreference();
+            LoadSettings();
             darkModeMenuItem.Checked = isDarkMode;
+            debugModeMenuItem.Checked = isDebugMode;
+            UpdatePaperSizeMenuChecks();
             ApplyTheme();
+
+            FormClosing += Form1_FormClosing;
 
             sofficePath = DetectLibreOffice();
 
@@ -143,20 +155,111 @@ namespace LibreDocToPdf
             }
         }
 
-        private void KillStuckLibreOffice()
+        private void DebugLog(string message)
         {
-            Process[] processes = Process.GetProcessesByName("soffice");
-            foreach (Process p in processes)
+            if (!isDebugMode)
+            {
+                return;
+            }
+            Log($"[DEBUG {DateTime.Now:HH:mm:ss.fff}] {message}");
+        }
+
+        private void KillTrackedLibreOffice()
+        {
+            int killed = 0;
+            foreach (int pid in launchedPids.Keys)
             {
                 try
                 {
-                    if ((DateTime.Now - p.StartTime).TotalMinutes > 5)
+                    Process p = Process.GetProcessById(pid);
+                    if (!p.HasExited)
                     {
-                        p.Kill();
-                        Log($"Killed stuck LibreOffice process (PID {p.Id})");
+                        p.Kill(true);
+                        killed++;
                     }
                 }
                 catch { }
+            }
+            launchedPids.Clear();
+            if (killed > 0)
+            {
+                Log($"Cleaned up {killed} tracked LibreOffice process(es)");
+            }
+        }
+
+        private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
+        {
+            cts?.Cancel();
+            KillTrackedLibreOffice();
+        }
+
+        private async Task EnsureTemplateProfileAsync(CancellationToken token)
+        {
+            if (templateReady)
+            {
+                return;
+            }
+            await templateLock.WaitAsync(token);
+            try
+            {
+                if (templateReady)
+                {
+                    return;
+                }
+                if (Directory.Exists(templateProfileDir) && Directory.Exists(Path.Combine(templateProfileDir, "user")))
+                {
+                    DebugLog($"Template profile already exists at {templateProfileDir}");
+                    templateReady = true;
+                    return;
+                }
+                Log("Initializing LibreOffice profile template (one-time)...");
+                Directory.CreateDirectory(templateProfileDir);
+                string userInstallation = "file:///" + templateProfileDir.Replace('\\', '/');
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = sofficePath,
+                    Arguments = $"-env:UserInstallation=\"{userInstallation}\" --headless --norestore --nologo --nofirststartwizard --nodefault --nolockcheck --terminate_after_init",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using Process p = Process.Start(psi)!;
+                launchedPids.TryAdd(p.Id, 0);
+                DebugLog($"Template init START PID={p.Id}");
+                Task<string> stdoutTask = p.StandardOutput.ReadToEndAsync();
+                Task<string> stderrTask = p.StandardError.ReadToEndAsync();
+                Task exitTask = p.WaitForExitAsync(token);
+                Task completed = await Task.WhenAny(exitTask, Task.Delay(60000, token));
+                if (completed != exitTask)
+                {
+                    try { p.Kill(true); } catch { }
+                    DebugLog("Template init timed out after 60s, killed");
+                }
+                else
+                {
+                    await exitTask;
+                    DebugLog($"Template init EXIT PID={p.Id} exitCode={p.ExitCode}");
+                }
+                launchedPids.TryRemove(p.Id, out _);
+                templateReady = true;
+            }
+            finally
+            {
+                templateLock.Release();
+            }
+        }
+
+        private static void CopyDirectory(string source, string dest)
+        {
+            Directory.CreateDirectory(dest);
+            foreach (string dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+            {
+                Directory.CreateDirectory(dir.Replace(source, dest));
+            }
+            foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            {
+                File.Copy(file, file.Replace(source, dest), true);
             }
         }
 
@@ -170,10 +273,25 @@ namespace LibreDocToPdf
                 return;
             }
 
-            KillStuckLibreOffice();
+            KillTrackedLibreOffice();
 
             cts = new CancellationTokenSource();
             CancellationToken token = cts.Token;
+
+            try
+            {
+                await EnsureTemplateProfileAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                Log("Operation cancelled.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log($"Template profile init failed: {ex.Message}");
+                return;
+            }
 
             SearchOption searchOption = chkRecursive.Checked ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
             string[] allFiles = Directory.GetFiles(folder, "*.*", searchOption);
@@ -193,24 +311,33 @@ namespace LibreDocToPdf
             progressBar.Maximum = totalFiles;
             progressBar.Value = 0;
 
+            int concurrency = Math.Min(Environment.ProcessorCount, 8);
             Log($"Found {files.Count} files, {totalFiles} to convert.");
+            DebugLog($"Concurrency limit = {concurrency}");
 
-            SemaphoreSlim semaphore = new SemaphoreSlim(Environment.ProcessorCount);
+            SemaphoreSlim semaphore = new SemaphoreSlim(concurrency);
             List<Task> tasks = new List<Task>();
+            int inFlight = 0;
 
             foreach (string file in filesToProcess)
             {
+                string fileCaptured = file;
                 Task task = Task.Run(async () =>
                 {
+                    DebugLog($"QUEUE waiting semaphore: {Path.GetFileName(fileCaptured)} (slots free={semaphore.CurrentCount})");
                     await semaphore.WaitAsync(token);
+                    int current = Interlocked.Increment(ref inFlight);
+                    DebugLog($"ACQUIRE semaphore: {Path.GetFileName(fileCaptured)} (inFlight={current})");
                     try
                     {
                         token.ThrowIfCancellationRequested();
-                        await ConvertWithRetry(file, token);
+                        await ConvertWithRetry(fileCaptured, token);
                     }
                     finally
                     {
+                        int remaining = Interlocked.Decrement(ref inFlight);
                         semaphore.Release();
+                        DebugLog($"RELEASE semaphore: {Path.GetFileName(fileCaptured)} (inFlight={remaining})");
                     }
                 });
 
@@ -267,30 +394,58 @@ namespace LibreDocToPdf
         {
             string outputDir = customOutputFolder ?? Path.GetDirectoryName(file)!;
             string expectedOutput = Path.Combine(outputDir, Path.GetFileNameWithoutExtension(file) + ".pdf");
+            string fname = Path.GetFileName(file);
+
+            string userProfileDir = Path.Combine(profileRoot, Guid.NewGuid().ToString("N"));
+            CopyDirectory(templateProfileDir, userProfileDir);
+            WritePaperSizeXcu(userProfileDir);
+            string userInstallation = "file:///" + userProfileDir.Replace('\\', '/');
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = sofficePath,
-                Arguments = $"--headless --convert-to pdf --outdir \"{outputDir}\" \"{file}\"",
+                Arguments = $"-env:UserInstallation=\"{userInstallation}\" --headless --norestore --nologo --nofirststartwizard --nodefault --nolockcheck --convert-to pdf --outdir \"{outputDir}\" \"{file}\"",
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
 
+            Process? p = null;
+            int pid = -1;
+            Stopwatch sw = Stopwatch.StartNew();
             try
             {
-                Process p = Process.Start(psi)!;
+                p = Process.Start(psi)!;
+                pid = p.Id;
+                launchedPids.TryAdd(pid, 0);
+                DebugLog($"START  PID={pid} FILE={fname}");
+
                 Task<string> stdoutTask = p.StandardOutput.ReadToEndAsync();
                 Task<string> stderrTask = p.StandardError.ReadToEndAsync();
+
                 await p.WaitForExitAsync(token);
+                sw.Stop();
+
                 string stdout = await stdoutTask;
                 string stderr = await stderrTask;
+                bool outputExists = File.Exists(expectedOutput);
 
-                if (File.Exists(expectedOutput))
+                DebugLog($"EXIT   PID={pid} FILE={fname} exitCode={p.ExitCode} elapsed={sw.ElapsedMilliseconds}ms outputExists={outputExists}");
+
+                if (!string.IsNullOrWhiteSpace(stdout))
+                {
+                    DebugLog($"  stdout PID={pid}: {stdout.Trim()}");
+                }
+                if (!string.IsNullOrWhiteSpace(stderr))
+                {
+                    DebugLog($"  stderr PID={pid}: {stderr.Trim()}");
+                }
+
+                if (outputExists)
                 {
                     Interlocked.Increment(ref processedFiles);
-                    Log($"Complete: {Path.GetFileName(file)}");
+                    Log($"Complete: {fname}");
                     UpdateProgress();
                     return true;
                 }
@@ -307,11 +462,39 @@ namespace LibreDocToPdf
             }
             catch (OperationCanceledException)
             {
-                
+                sw.Stop();
+                DebugLog($"CANCEL PID={pid} FILE={fname} elapsed={sw.ElapsedMilliseconds}ms");
+                try
+                {
+                    if (p != null && !p.HasExited)
+                    {
+                        p.Kill(true);
+                        DebugLog($"  killed PID={pid} after cancel");
+                    }
+                }
+                catch (Exception killEx)
+                {
+                    DebugLog($"  kill after cancel failed PID={pid}: {killEx.Message}");
+                }
             }
             catch (Exception ex)
             {
+                sw.Stop();
+                DebugLog($"EXCEPT PID={pid} FILE={fname} elapsed={sw.ElapsedMilliseconds}ms: {ex.GetType().Name}: {ex.Message}");
                 Log(ex.Message);
+            }
+            finally
+            {
+                if (pid != -1)
+                {
+                    launchedPids.TryRemove(pid, out _);
+                }
+                p?.Dispose();
+                try
+                {
+                    Directory.Delete(userProfileDir, true);
+                }
+                catch { }
             }
 
             return false;
@@ -366,7 +549,66 @@ namespace LibreDocToPdf
         {
             isDarkMode = darkModeMenuItem.Checked;
             ApplyTheme();
-            SaveThemePreference();
+            SaveSettings();
+        }
+
+        private void debugModeMenuItem_Click(object sender, EventArgs e)
+        {
+            isDebugMode = debugModeMenuItem.Checked;
+            Log($"Debug logging {(isDebugMode ? "enabled" : "disabled")}");
+            SaveSettings();
+        }
+
+        private void paperSizeItem_Click(object? sender, EventArgs e)
+        {
+            if (sender == paperLetterMenuItem)
+            {
+                paperSize = "Letter";
+            }
+            else if (sender == paperA4MenuItem)
+            {
+                paperSize = "A4";
+            }
+            else if (sender == paperLegalMenuItem)
+            {
+                paperSize = "Legal";
+            }
+            UpdatePaperSizeMenuChecks();
+            Log($"Default paper size set to {paperSize}");
+            SaveSettings();
+        }
+
+        private void UpdatePaperSizeMenuChecks()
+        {
+            paperLetterMenuItem.Checked = paperSize == "Letter";
+            paperA4MenuItem.Checked = paperSize == "A4";
+            paperLegalMenuItem.Checked = paperSize == "Legal";
+        }
+
+        private (int width, int height) GetPaperDimensionsHundredthsMm()
+        {
+            return paperSize switch
+            {
+                "A4" => (21000, 29700),
+                "Legal" => (21590, 35560),
+                _ => (21590, 27940),
+            };
+        }
+
+        private void WritePaperSizeXcu(string profileDir)
+        {
+            (int width, int height) = GetPaperDimensionsHundredthsMm();
+            string userDir = Path.Combine(profileDir, "user");
+            Directory.CreateDirectory(userDir);
+            string xcuPath = Path.Combine(userDir, "registrymodifications.xcu");
+            string xml = $@"<?xml version=""1.0"" encoding=""UTF-8""?>
+<oor:items xmlns:oor=""http://openoffice.org/2001/registry"" xmlns:xs=""http://www.w3.org/2001/XMLSchema"" xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"">
+ <item oor:path=""/org.openoffice.Office.Writer/DefaultPageSize""><prop oor:name=""Width"" oor:op=""fuse""><value>{width}</value></prop></item>
+ <item oor:path=""/org.openoffice.Office.Writer/DefaultPageSize""><prop oor:name=""Height"" oor:op=""fuse""><value>{height}</value></prop></item>
+ <item oor:path=""/org.openoffice.Office.Common/Save/Document""><prop oor:name=""PrinterIndependentLayout"" oor:op=""fuse""><value>2</value></prop></item>
+</oor:items>
+";
+            File.WriteAllText(xcuPath, xml);
         }
 
         private void ApplyTheme()
@@ -389,6 +631,13 @@ namespace LibreDocToPdf
                 foreach (ToolStripItem sub in item.DropDownItems)
                 {
                     sub.ForeColor = theme.MenuFore;
+                    if (sub is ToolStripMenuItem subMenu)
+                    {
+                        foreach (ToolStripItem child in subMenu.DropDownItems)
+                        {
+                            child.ForeColor = theme.MenuFore;
+                        }
+                    }
                 }
             }
 
@@ -420,22 +669,57 @@ namespace LibreDocToPdf
             progressBar.Invalidate();
         }
 
-        private bool LoadThemePreference()
+        private void LoadSettings()
         {
+            isDarkMode = false;
+            isDebugMode = false;
             try
             {
-                if (File.Exists(settingsPath))
-                    return File.ReadAllText(settingsPath).Trim() == "dark";
+                if (!File.Exists(settingsPath))
+                {
+                    return;
+                }
+                string[] lines = File.ReadAllLines(settingsPath);
+                if (lines.Length == 1 && !lines[0].Contains('='))
+                {
+                    isDarkMode = lines[0].Trim() == "dark";
+                    return;
+                }
+                foreach (string line in lines)
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0)
+                    {
+                        continue;
+                    }
+                    string key = line.Substring(0, eq).Trim();
+                    string val = line.Substring(eq + 1).Trim();
+                    if (key == "theme")
+                    {
+                        isDarkMode = val == "dark";
+                    }
+                    else if (key == "debug")
+                    {
+                        isDebugMode = val == "true";
+                    }
+                    else if (key == "paper")
+                    {
+                        if (val == "Letter" || val == "A4" || val == "Legal")
+                        {
+                            paperSize = val;
+                        }
+                    }
+                }
             }
             catch { }
-            return false;
         }
 
-        private void SaveThemePreference()
+        private void SaveSettings()
         {
             try
             {
-                File.WriteAllText(settingsPath, isDarkMode ? "dark" : "light");
+                string content = $"theme={(isDarkMode ? "dark" : "light")}{Environment.NewLine}debug={(isDebugMode ? "true" : "false")}{Environment.NewLine}paper={paperSize}{Environment.NewLine}";
+                File.WriteAllText(settingsPath, content);
             }
             catch { }
         }

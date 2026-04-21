@@ -1,3 +1,5 @@
+[Release Notes](ReleaseNotes.md)
+
 This is a simple program to convert DOC and DOCX files to PDFs. It uses LibreOffice and requires LibreOffice to be installed.
 
 The Windows version is written in C# and is a .NET8 WinForms program.
